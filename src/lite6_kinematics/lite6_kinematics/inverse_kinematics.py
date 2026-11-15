@@ -11,7 +11,7 @@ Implement the following, replacing every ``raise NotImplementedError``:
 
     Part B - the node
         IkNode                             reads a desired pose, publishes the
-                                           joint angles that reach it
+                                        joint angles that reach it
 
 Run the node with ``ros2 run lite6_kinematics ik_node``.
 
@@ -67,7 +67,24 @@ def pose_error(T_c, T_d) -> np.ndarray:
     Args:
         T_c: (4, 4) current pose.
         T_d: (4, 4) desired pose.
+    """
+    T_c = np.asarray(T_c, dtype=float)
+    T_d = np.asarray(T_d, dtype=float)
 
+    # Separar rotação (3x3) e posição (3x1) de cada pose
+    R_c, p_c = T_c[:3, :3], T_c[:3, 3]
+    R_d, p_d = T_d[:3, :3], T_d[:3, 3]
+
+    # Erro de posição: quanto falta andar
+    e_pos = p_d - p_c
+
+# Erro de orientação: rotação que leva a orientação atual à desejada,
+# convertida num vetor de 3 números (eixo × ângulo)
+
+
+    return np.concatenate((e_pos, e_ori))
+
+    """
     Returns:
         (6,) array [p_d - p_c, phi(R_d R_c^T)]: the difference of the positions
         (m), then the rotation vector (rad) of the rotation that takes the
@@ -75,7 +92,7 @@ def pose_error(T_c, T_d) -> np.ndarray:
         rotation_vector(), which is provided.
     """
     # TODO (LW2, Part B)
-    raise NotImplementedError('pose_error() is not implemented yet')
+# raise NotImplementedError('pose_error() is not implemented yet')
 
 
 def jacobian(q, h: float = None) -> np.ndarray:
@@ -84,7 +101,20 @@ def jacobian(q, h: float = None) -> np.ndarray:
     Args:
         q: six joint angles (rad).
         h: increment (rad) added to one joint at a time. Default: H.
+    """
+    q = np.asarray(q, dtype=float)
 
+    T0 = forward_kinematics(q)        # pose nos ângulos atuais
+    J = np.zeros((6, 6))
+
+    for i in range(6):
+        q_h = q.copy()                # cópia, para não estragar o q original
+        q_h[i] += h                   # mexe só a junta i
+        T1 = forward_kinematics(q_h)  # pose com a junta i mexida
+        J[:, i] = pose_error(T0, T1) / h   # coluna i = variação da pose / h
+
+    return J
+    """
     Returns:
         (6, 6) array whose column i is
         pose_error(T(q), T(q + h * delta_i)) / h,
@@ -98,25 +128,49 @@ def jacobian(q, h: float = None) -> np.ndarray:
 
 
 def inverse_kinematics(T_d, q_start, h: float = None):
-    """Joint angles that put the end-effector at T_d: Newton's method, equation (3).
+    T_d = np.asarray(T_d, dtype=float)
+    q = np.array(q_start, dtype=float)   # cópia: não alterar o q_start de quem chamou
 
-    Args:
-        T_d:     (4, 4) desired pose of {6} in {0}.
-        q_start: six joint angles (rad), the starting configuration Theta_0.
-        h:       increment passed to jacobian(). Default: H.
+    k = 0
+    while True:
+        # 1. erro entre a pose atual e a desejada
+        e = pose_error(forward_kinematics(q), T_d)
 
-    Returns:
-        (q, status, n_iter):
-            q       (6,) array, the final joint angles (rad);
-            status  'converged', 'max_iterations', 'singular' or 'out_of_range';
-            n_iter  the number of iterations performed: how many times
-                    Theta_{k+1} = Theta_k + Delta Theta_k was executed before
-                    stopping (0 if q_start already reaches T_d).
+        # 2. critério de paragem: posição E orientação dentro da tolerância
+        if np.linalg.norm(e[:3]) < TOL_POS and np.linalg.norm(e[3:]) < TOL_ORI:
+            break
 
-    The iteration, the stopping rules, the step limit and the treatment of the
-    joint ranges are those of Part A of the handout, with the constants
-    TOL_POS, TOL_ORI, MAX_ITER and MAX_STEP and the ranges JOINT_LIMITS.
-    """
+        # 3. limite de iterações
+        if k == MAX_ITER:
+            return q, 'max_iterations', k
+
+        # 4. passo de Newton: resolver J * dq = e
+        J = jacobian(q, h)
+        try:
+            dq = np.linalg.solve(J, e)
+        except np.linalg.LinAlgError:
+            return q, 'singular', k
+
+        # 5. limitar o passo: a maior variação de junta não pode passar MAX_STEP
+        max_dq = np.max(np.abs(dq))
+        if max_dq > MAX_STEP:
+            dq = dq * (MAX_STEP / max_dq)
+
+        # 6. atualizar
+        q = q + dq
+        k += 1
+
+    # Convergiu: trazer cada ângulo para dentro da gama da junta (±2π), se possível
+    for i in range(6):
+        lo, hi = JOINT_LIMITS[i]
+        if q[i] < lo and lo <= q[i] + 2 * math.pi <= hi:
+            q[i] += 2 * math.pi
+        elif q[i] > hi and lo <= q[i] - 2 * math.pi <= hi:
+            q[i] -= 2 * math.pi
+        if not (lo <= q[i] <= hi):
+            return q, 'out_of_range', k
+
+    return q, 'converged', k
     if h is None:
         h = H
     # TODO (LW2, Part B)
@@ -127,28 +181,45 @@ def inverse_kinematics(T_d, q_start, h: float = None):
 # Part B - the node
 # =============================================================================
 class IkNode(Node):
-    """Solves the inverse kinematics of every desired pose it receives.
 
-    Subscribes   target_topic         geometry_msgs/PoseStamped  (/lite6_ik/target)
-                 joint_states_topic   sensor_msgs/JointState     (/joint_states)
-    Publishes    solution_topic       sensor_msgs/JointState     (/lite6_ik/solution)
+    JOINT_NAMES = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
 
-    The target is the pose of link_eef in link_base (header.frame_id is
-    BASE_FRAME). For each target received, the node solves from the latest
-    joint angles received, as the starting configuration. If the status is
-    'converged' it publishes a JointState:
-        name             JOINT_NAMES
-        position         the solution, in the order of JOINT_NAMES
-        header.stamp     the stamp of the TARGET it answers (copy it:
-                         ik_check matches the solution to the target by it)
-    Otherwise it publishes nothing and logs the status.
+    def __init__(self):
+        super().__init__('lite6_ik')
+        self.q_current = None    # últimos ângulos recebidos (None até chegar o 1.º)
 
-    The topic names are constructor arguments so that the tests can run the
-    node on private topics: use them, do not write the names again.
-    """
+        self.create_subscription(JointState, '/joint_states', self.joint_states_callback, 10)
+        self.create_subscription(PoseStamped, '/lite6_ik/target', self.target_callback, 10)
+        self.solution_pub = self.create_publisher(JointState, '/lite6_ik/solution', 10)
+
+    def joint_states_callback(self, msg):
+        # /joint_states pode trazer as juntas por outra ordem: procurar pelo nome
+        positions = dict(zip(msg.name, msg.position))
+        if all(name in positions for name in self.JOINT_NAMES):
+            self.q_current = np.array([positions[name] for name in self.JOINT_NAMES])
+
+    def target_callback(self, msg):
+        if self.q_current is None:
+            self.get_logger().warn('Ainda não foram recebidos ângulos em /joint_states')
+            return
+
+        T_d = transform_from_pose(msg.pose)
+        q, status, n_iter = inverse_kinematics(T_d, self.q_current, H)
+
+        if status != 'converged':
+            self.get_logger().warn(f'Sem solução: {status} ({n_iter} iterações)')
+            return
+
+        sol = JointState()
+        sol.header.stamp = msg.header.stamp    # marca temporal copiada da pose desejada
+        sol.header.frame_id = msg.header.frame_id
+        sol.name = list(self.JOINT_NAMES)
+        sol.position = [float(x) for x in q]
+        self.solution_pub.publish(sol)
+        self.get_logger().info(f'Solução publicada ({n_iter} iterações): {np.round(q, 4).tolist()}')
 
     def __init__(self, target_topic='/lite6_ik/target', joint_states_topic='/joint_states',
-                 solution_topic='/lite6_ik/solution'):
+                solution_topic='/lite6_ik/solution'):
         super().__init__('ik_node')
         # TODO (LW2, Part B): create the publisher on solution_topic and the
         # two subscriptions (callbacks: self.on_joint_state, self.on_target).

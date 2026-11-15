@@ -11,7 +11,7 @@ Implement the following, replacing every ``raise NotImplementedError``:
 
     Part C - the node
         FkNode                             reads /joint_states, publishes the
-                                           pose of the end-effector
+                                        pose of the end-effector
 
 Run the node with ``ros2 run lite6_kinematics fk_node``.
 
@@ -27,9 +27,9 @@ Conventions - fixed, not yours to choose:
     * Craig's MODIFIED Denavit-Hartenberg convention, frames {0} ... {6}.
     * Frame {0} coincides with the ROS frame ``link_base``.
     * Frame {6} coincides with the ROS frame ``link_eef`` (the end-effector
-      frame).
+    frame).
     * Joint angles in RADIANS, exactly as published on /joint_states
-      (q = 0 is the controller's zero configuration).
+    (q = 0 is the controller's zero configuration).
     * Lengths in METRES.
 
 Allowed imports: ``numpy`` and ``math`` for the maths, and ``rclpy``,
@@ -40,6 +40,7 @@ Nothing else - no MoveIt, no kinematics library, no URDF parser, no tf.
 ``test/test_forward_kinematics.py`` checks the imports.
 """
 
+import math
 import numpy as np
 
 try:
@@ -75,9 +76,22 @@ def dh_table(q) -> np.ndarray:
         theta_i = q_i + theta_offset_i. So dh_table(zeros(6)) is the table
         with the offsets alone.
     """
-    # TODO (LW1, Part B): the table you derived in Part A, with the joint
-    # angles added to the theta column.
-    raise NotImplementedError('dh_table() is not implemented yet')
+    q = np.asarray(q, dtype=float)
+
+    #               a_{i-1} (m)  alpha_{i-1} (rad)  d_i (m)   offset theta_i (rad)
+    params = np.array([
+        # valores de d e a medidos na simulação (poses A e B), em metros
+        [0.0,        0.0,         0.243552,  0.0],          # joint 1
+        [0.0,       -np.pi / 2,   0.0,      -np.pi / 2],    # joint 2
+        [0.200170,   np.pi,       0.0,      -np.pi / 2],    # joint 3
+        [0.087,      np.pi / 2,   0.227636,  0.0],          # joint 4
+        [0.0,        np.pi / 2,   0.0,       0.0],          # joint 5
+        [0.0,       -np.pi / 2,   0.062497,  0.0],          # joint 6
+    ])
+
+    table = params.copy()
+    table[:, 3] = params[:, 3] + q      # theta_i = q_i + offset_i
+    return table
 
 
 def mdh_transform(a: float, alpha: float, d: float, theta: float) -> np.ndarray:
@@ -93,7 +107,15 @@ def mdh_transform(a: float, alpha: float, d: float, theta: float) -> np.ndarray:
         (4, 4) homogeneous transform.
     """
     # TODO (LW1, Part B)
-    raise NotImplementedError('mdh_transform() is not implemented yet')
+    ca, sa = math.cos(alpha), math.sin(alpha)
+    ct, st = math.cos(theta), math.sin(theta)
+    return np.array([
+        [ct,      -st,      0.0,  a],
+        [st * ca,  ct * ca, -sa, -sa * d],
+        [st * sa,  ct * sa,  ca,  ca * d],
+        [0.0,      0.0,     0.0,  1.0],
+    ])
+    #raise NotImplementedError('mdh_transform() is not implemented yet')
 
 
 def forward_kinematics(q, all_frames: bool = False):
@@ -106,13 +128,16 @@ def forward_kinematics(q, all_frames: bool = False):
     Returns:
         all_frames=False: (4, 4) array ^0_6 T.
         all_frames=True:  list of seven (4, 4) arrays
-                          [^0_0 T (identity), ^0_1 T, ^0_2 T, ..., ^0_6 T].
+                        [^0_0 T (identity), ^0_1 T, ^0_2 T, ..., ^0_6 T].
 
     Uses dh_table(q) and mdh_transform().
     """
-    # TODO (LW1, Part B): chain mdh_transform() over the rows of dh_table(q),
-    # starting from the identity.
-    raise NotImplementedError('forward_kinematics() is not implemented yet')
+    T = np.eye(4)                       # ^0_0 T: começamos na base
+    frames = [T.copy()]
+    for a, alpha, d, theta in dh_table(q):
+        T = T @ mdh_transform(a, alpha, d, theta)   # ^0_i T = ^0_{i-1} T . ^{i-1}_i T
+        frames.append(T.copy())
+    return frames if all_frames else T
 
 
 # =============================================================================
@@ -127,11 +152,11 @@ class FkNode(Node):
     The published message is the pose of link_eef in link_base:
         header.frame_id  BASE_FRAME
         header.stamp     the stamp of the JointState it was computed from
-                         (copy it: fk_check matches the pose to the joint
-                         angles by this stamp)
+                        (copy it: fk_check matches the pose to the joint
+                        angles by this stamp)
         pose.position    x, y, z in metres, from ^0_6 T
         pose.orientation the rotation of ^0_6 T as a quaternion; use
-                         quaternion_from_matrix(), which is provided
+                        quaternion_from_matrix(), which is provided
 
     The topic names are constructor arguments so that the tests can run the
     node on private topics: use them, do not write the names again.
@@ -139,21 +164,36 @@ class FkNode(Node):
 
     def __init__(self, joint_states_topic='/joint_states', pose_topic='/lite6_fk/pose'):
         super().__init__('fk_node')
-        # TODO (LW1, Part C): create the publisher on pose_topic and the
-        # subscription on joint_states_topic (callback: self.on_joint_state).
-        raise NotImplementedError('FkNode.__init__ is not implemented yet')
+        self.pub = self.create_publisher(PoseStamped, pose_topic, 10)
+        self.sub = self.create_subscription(
+            JointState, joint_states_topic, self.on_joint_state, 10)
 
     def on_joint_state(self, msg):
         """Called for every JointState: compute the pose and publish it."""
-        # TODO (LW1, Part C)
-        #   1. q = the angles of JOINT_NAMES, picked BY NAME from msg.name /
-        #      msg.position. The order is not promised and the message may
-        #      carry other joints: never use the index.
-        #   2. T = forward_kinematics(q)
-        #   3. fill a PoseStamped as described in the class docstring
-        #   4. publish it
-        # Keep it short and non-blocking: this runs inside the spin.
-        raise NotImplementedError('FkNode.on_joint_state is not implemented yet')
+        # 1. os ângulos, escolhidos pelo nome (a ordem na mensagem não é garantida)
+        angulos = dict(zip(msg.name, msg.position))
+        if not all(nome in angulos for nome in JOINT_NAMES):
+            return                      # mensagem sem as seis juntas: ignora
+        q = [angulos[nome] for nome in JOINT_NAMES]
+
+        # 2. a pose da mão em relação à base
+        T = forward_kinematics(q)
+
+        # 3. preencher a mensagem
+        out = PoseStamped()
+        out.header.stamp = msg.header.stamp       # copiado da mensagem de entrada
+        out.header.frame_id = BASE_FRAME
+        out.pose.position.x = float(T[0, 3])
+        out.pose.position.y = float(T[1, 3])
+        out.pose.position.z = float(T[2, 3])
+        qx, qy, qz, qw = quaternion_from_matrix(T[:3, :3])
+        out.pose.orientation.x = float(qx)
+        out.pose.orientation.y = float(qy)
+        out.pose.orientation.z = float(qz)
+        out.pose.orientation.w = float(qw)
+
+        # 4. publicar
+        self.pub.publish(out)
 
 
 # =============================================================================
